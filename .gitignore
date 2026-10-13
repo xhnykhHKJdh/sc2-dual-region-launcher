@@ -1,5 +1,6 @@
 # Local installation records, generated plans and backups must stay private.
 work/
+dist/
 backups/
 candidates/
 repair-backups/

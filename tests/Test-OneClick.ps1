@@ -46,8 +46,30 @@ function New-OCFixture([switch]$Separated, [switch]$SameBuild) {
     Write-FixtureText (Join-Path $launcherDirectory 'Battle.net Launcher.exe') 'synthetic launcher; never execute'
     $launcherRecord = New-FixtureProduct 'battle.net' $launcherDirectory 'eu' '2.0.0.12345' (New-FixtureKey) (New-FixtureKey)
     Write-FixtureBytes $fixture.AgentDatabase (New-FixtureDatabase @($fixture.CNRecord,$fixture.EURecord,$fixture.PTRRecord,$fixture.OtherRecord,$launcherRecord))
+    $fixture | Add-Member -MemberType NoteProperty -Name LauncherRecord -Value $launcherRecord
     return $fixture
 }
+function Set-OCInternationalRegions($Fixture,[string]$AgentRegion,[string]$LocalRegion,[string]$BuildBranch) {
+    $agentRecord=New-FixtureProduct 's2' $Fixture.EUDirectory $AgentRegion $Fixture.EUVersion $Fixture.EUKey $Fixture.EUCDNKey
+    $localRecord=New-FixtureProduct 's2' $Fixture.EUDirectory $LocalRegion $Fixture.EUVersion $Fixture.EUKey $Fixture.EUCDNKey
+    Write-FixtureBytes $Fixture.AgentDatabase (New-FixtureDatabase @($Fixture.CNRecord,$agentRecord,$Fixture.PTRRecord,$Fixture.OtherRecord,$Fixture.LauncherRecord))
+    Write-FixtureBytes (Join-Path $Fixture.EUDirectory '.product.db') $localRecord
+    $buildPath=Join-Path $Fixture.EUDirectory '.build.info'
+    $lines=@(([IO.File]::ReadAllText($buildPath) -split '\r?\n')|Where-Object {$_})
+    $columns=@(($lines[0] -split '\|')|ForEach-Object {($_ -split '!')[0]})
+    $branchIndex=[Array]::IndexOf($columns,'Branch')
+    $activeIndex=[Array]::IndexOf($columns,'Active')
+    Assert-OC ($branchIndex -ge 0 -and $activeIndex -ge 0) 'Synthetic build table needs named branch and active columns'
+    $activeRows=0
+    for($i=1;$i -lt $lines.Count;$i++) {
+        $cells=$lines[$i] -split '\|'
+        if($cells[$activeIndex] -eq '1') {$cells[$branchIndex]=$BuildBranch;$activeRows++}
+        $lines[$i]=$cells -join '|'
+    }
+    Assert-OC ($activeRows -eq 1) 'Synthetic international fixture must have one active row'
+    Write-FixtureText $buildPath (($lines -join "`r`n")+"`r`n")
+}
+function Get-OCFixtureFingerprint($Fixture) {Get-OneClickTreeSignature @(Get-OneClickTree $Fixture.Root -Hash) -Hash}
 function Set-OCDiscovery($Fixture) {
     $script:fixtureAgent = $Fixture.AgentDatabase
     function script:Get-OneClickDiscovery { Get-Sc2AutoDiscovery -AgentDatabase $script:fixtureAgent }
@@ -145,6 +167,70 @@ try {
         $result=Invoke-SC2DualRegionOneClick -Run
         Assert-OC ($result.Status -eq 'AlreadySeparated' -and $script:shortcutCalls -eq 1) 'Separated entry was not reused'
         Assert-OC ((Get-FileHash -LiteralPath $f.AgentDatabase -Algorithm SHA256).Hash -eq $before) 'Separated metadata changed'
+    }
+    Test-OC 'registered Americas and Asia global installs with consistent regional build rows are discovered read-only' {
+        foreach($region in @('us','kr')) {
+            $f=New-OCFixture -Separated
+            Set-OCInternationalRegions $f $region $region $region
+            $before=Get-OCFixtureFingerprint $f
+            $d=Get-Sc2AutoDiscovery -AgentDatabase $f.AgentDatabase
+            Assert-OC ($d.Status -eq 'Separated') ('Registered '+$region+' install rejected: '+$d.Reason)
+            Assert-OC ($d.CNDirectory -eq $f.CNDirectory -and $d.EUDirectory -eq $f.EUDirectory) 'Global discovery changed an installation path'
+            Assert-OC ($d.EUVersion -eq $f.EUVersion -and $d.EUBuildKey -eq $f.EUKey) 'Global discovery lost the verified international version or build key'
+            Assert-OC ((Get-OCFixtureFingerprint $f) -eq $before) 'Regional discovery rewrote a fixture installation file'
+        }
+    }
+    Test-OC 'official global game region us or kr may retain an eu build branch without losing discovery' {
+        foreach($region in @('us','kr')) {
+            $f=New-OCFixture -Separated
+            Set-OCInternationalRegions $f $region $region 'eu'
+            $before=Get-OCFixtureFingerprint $f
+            $d=Get-Sc2AutoDiscovery -AgentDatabase $f.AgentDatabase
+            Assert-OC ($d.Status -eq 'Separated') ('Official global record '+$region+' with eu branch rejected: '+$d.Reason)
+            Assert-OC ($d.EUDirectory -eq $f.EUDirectory -and $d.EUVersion -eq $f.EUVersion -and $d.EUBuildKey -eq $f.EUKey) 'Global region selection did not retain the same verified install and active build'
+            Assert-OC ((Get-OCFixtureFingerprint $f) -eq $before) 'Global region recognition rewrote the build branch or registration region'
+        }
+    }
+    Test-OC 'unknown registered global game regions remain unsupported and unmodified' {
+        foreach($region in @('cn','unknown','tw')) {
+            $f=New-OCFixture -Separated
+            Set-OCInternationalRegions $f $region $region 'eu'
+            $before=Get-OCFixtureFingerprint $f
+            $d=Get-Sc2AutoDiscovery -AgentDatabase $f.AgentDatabase
+            Assert-OC ($d.Status -eq 'Unsupported') 'Unknown or CN international registration was accepted'
+            Assert-OC ((Get-OCFixtureFingerprint $f) -eq $before) 'Unknown registration detection changed files'
+        }
+    }
+    Test-OC 'Agent and local global game regions must still match exactly' {
+        foreach($pair in @([pscustomobject]@{Agent='us';Local='eu'},[pscustomobject]@{Agent='kr';Local='us'},[pscustomobject]@{Agent='eu';Local='kr'})) {
+            $f=New-OCFixture -Separated
+            Set-OCInternationalRegions $f $pair.Agent $pair.Local 'eu'
+            $before=Get-OCFixtureFingerprint $f
+            $d=Get-Sc2AutoDiscovery -AgentDatabase $f.AgentDatabase
+            Assert-OC ($d.Status -eq 'Unsupported') 'Mismatched Agent and local global regions were treated as verified'
+            Assert-OC ((Get-OCFixtureFingerprint $f) -eq $before) 'Region mismatch detection changed files'
+        }
+    }
+    Test-OC 'valid global registration cannot make CN or unknown active build branches acceptable' {
+        foreach($branch in @('cn','unknown','s2_ptr')) {
+            $f=New-OCFixture -Separated
+            Set-OCInternationalRegions $f 'us' 'us' $branch
+            $before=Get-OCFixtureFingerprint $f
+            $d=Get-Sc2AutoDiscovery -AgentDatabase $f.AgentDatabase
+            Assert-OC ($d.Status -eq 'Unsupported') 'CN or unknown branch was accepted for international s2'
+            Assert-OC ((Get-OCFixtureFingerprint $f) -eq $before) 'Branch rejection changed files'
+        }
+    }
+    Test-OC 'CN active build branch remains strict when the international game region is us' {
+        $f=New-OCFixture -Separated
+        Set-OCInternationalRegions $f 'us' 'us' 'eu'
+        $cnBuildPath=Join-Path $f.CNDirectory '.build.info'
+        $cnBuild=[IO.File]::ReadAllText($cnBuildPath)
+        Write-FixtureText $cnBuildPath ($cnBuild.Replace('cn|1|','us|1|'))
+        $before=Get-OCFixtureFingerprint $f
+        $d=Get-Sc2AutoDiscovery -AgentDatabase $f.AgentDatabase
+        Assert-OC ($d.Status -eq 'Unsupported') 'International branch flexibility was incorrectly applied to s2_cn'
+        Assert-OC ((Get-OCFixtureFingerprint $f) -eq $before) 'CN branch rejection changed files'
     }
     Test-OC 'copy command copies files without mirror deletion movement or links' {
         $args=@(Get-OneClickRobocopyArguments 'source synthetic' 'destination synthetic')

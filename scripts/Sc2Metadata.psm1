@@ -866,7 +866,14 @@ function Get-VerifiedLocalBuild {
     $table = Read-BuildInfo (Read-Database $tablePath)
     $row = Select-BuildRow $AgentRecord.Bytes $table
     $localRow = Select-BuildRow $localRecord.Bytes $table
-    if ($row.Values['Build Key'] -ne $localRow.Values['Build Key'] -or $row.Values['Branch'] -ne $Region -or $row.Values['Active'] -ne '1') {
+    # Global Play changes the installation's selected region while retaining
+    # the downloaded global build (for example us registration / eu branch).
+    # Only the international s2 product can reuse a global branch this way.
+    $branchMatches = $row.Values['Branch'] -eq $Region
+    if ($Uid -eq 's2' -and $Region -in @('eu','us','kr')) {
+        $branchMatches = $row.Values['Branch'] -in @('eu','us','kr')
+    }
+    if ($row.Values['Build Key'] -ne $localRow.Values['Build Key'] -or -not $branchMatches -or $row.Values['Active'] -ne '1') {
         throw 'Local and Agent state must select the same active regional build.'
     }
     $key = $row.Values['Build Key'].ToLowerInvariant()
@@ -926,15 +933,18 @@ function Get-Sc2AutoDiscovery {
             $result.EUBuildKey = $oldEuRow.Values['Build Key']
             $result.Status = 'Conflict'; $result.Reason = 'Both formal products share the CN directory and the international record is still cn.'
         }
-        elseif ($registeredEU -ne $result.CNDirectory -and $eu.Region -eq 'eu') {
+        elseif ($registeredEU -ne $result.CNDirectory -and $eu.Region -in @('eu','us','kr')) {
             $result.EUDirectory = $registeredEU
             Assert-Sc2Paths $result.AgentDatabase $result.CNDirectory $result.EUDirectory
             Assert-EUGameCopy $result.EUDirectory
-            $verifiedEU = Get-VerifiedLocalBuild $euRecord $result.EUDirectory 's2' 'eu'
+            # The official client updates these regional records after a game
+            # region change. Keep verifying the recorded region instead of
+            # rewriting it or requiring an extra installation per server.
+            $verifiedEU = Get-VerifiedLocalBuild $euRecord $result.EUDirectory 's2' $eu.Region
             $result.EUBuildKey = $verifiedEU.BuildKey
-            $result.Status = 'Separated'; $result.Reason = 'Separate CN and EU directories agree with their local metadata, active build rows, real build-name, and Base client.'
+            $result.Status = 'Separated'; $result.Reason = 'Separate CN and international directories agree with their local metadata, active build rows, real build-name, and Base client.'
         }
-        else { throw 'Only a shared cn conflict or a verified separate cn/eu pair can be handled automatically.' }
+        else { throw 'Only a shared cn conflict or a verified separate cn and eu/us/kr pair can be handled automatically.' }
     }
     catch { $result.Status = 'Unsupported'; $result.Reason = $_.Exception.Message }
     return [pscustomobject]$result

@@ -17,3 +17,6 @@ jobs:
       - name: Run isolated tests with Windows PowerShell
         shell: powershell
         run: ./tests/Run-Tests.ps1
+      - name: Build the native Windows launcher
+        shell: powershell
+        run: ./scripts/Build-SC2Launcher.ps1

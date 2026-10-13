@@ -300,7 +300,7 @@ function Enable-OneClickMultipleInstances($Discovery, [string]$WorkDirectory) {
     return 'Enabled'
 }
 
-function Invoke-SC2DualRegionOneClick([switch]$Run) {
+function Invoke-SC2DualRegionOneClick([switch]$Run, [switch]$SkipLaunch) {
     $discovery = Get-OneClickDiscovery
     if ($discovery.Status -notin @('Conflict','Separated')) { throw ('自动识别未通过，尚未修改任何安装。' + $discovery.Reason) }
     Write-Host ('国服目录：' + $discovery.CNDirectory)
@@ -340,8 +340,9 @@ function Invoke-SC2DualRegionOneClick([switch]$Run) {
         try { $null = Enable-OneClickMultipleInstances $discovery $work }
         catch { Write-Host ('多开设置未自动完成，安装分离已保留；请在战网设置中开启允许多个实例。原因：' + $_.Exception.Message) }
         Ensure-OneClickShortcuts $discovery
-        Start-OneClickEU $discovery
-        Write-Host '分离完成，已打开官方欧服入口。若战网等待更新，请点“更新”完成官方补丁，再进入游戏。'
+        if (-not $SkipLaunch) { Start-OneClickEU $discovery }
+        if ($SkipLaunch) { Write-Host '分离完成。请通过官方欧服战网完成校验和更新后再进入游戏。' }
+        else { Write-Host '分离完成，已打开官方欧服入口。若战网等待更新，请点“更新”完成官方补丁，再进入游戏。' }
         Write-Host '国服使用“星际2-国服（网易）”。网易登录、验证码和账号确认请在官方窗口完成。'
         Write-Host '需要同时保留两个战网窗口时，在战网“设置 → App”开启允许多个实例。'
         Write-Host 'EU 程序构建由官方更新补齐；新副本的 SC2Data 大型数据已保留供官方校验复用。'
