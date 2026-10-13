@@ -1,0 +1,19 @@
+name: PowerShell tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  synthetic-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Run isolated tests with PowerShell 7
+        shell: pwsh
+        run: ./tests/Run-Tests.ps1
+      - name: Run isolated tests with Windows PowerShell
+        shell: powershell
+        run: ./tests/Run-Tests.ps1
